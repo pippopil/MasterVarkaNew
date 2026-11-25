@@ -1,0 +1,188 @@
+name: Сборка и Релиз (Android APK & Web)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-release:
+    name: Сборка, инкремент версии и публикация релиза
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Клонирование репозитория
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Установка Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Определение номера сборки и версионирование
+        id: versioning
+        run: |
+          BUILD_NUM="${{ github.run_number }}"
+          BASE_VERSION=$(node -p "require('./package.json').version || '1.0.0'")
+          MAJOR_MINOR=$(echo "$BASE_VERSION" | cut -d. -f1,2)
+          FULL_VERSION="${MAJOR_MINOR}.${BUILD_NUM}"
+          TAG_NAME="v${FULL_VERSION}"
+
+          echo "BUILD_NUM=${BUILD_NUM}" >> $GITHUB_OUTPUT
+          echo "FULL_VERSION=${FULL_VERSION}" >> $GITHUB_OUTPUT
+          echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_OUTPUT
+
+          echo "VITE_APP_VERSION=${FULL_VERSION}" >> $GITHUB_ENV
+          echo "VITE_BUILD_NUMBER=${BUILD_NUM}" >> $GITHUB_ENV
+
+          echo "Сборка #${BUILD_NUM}, версия: ${FULL_VERSION}, тэг: ${TAG_NAME}"
+
+          # Обновление версии в package.json
+          npm version "${FULL_VERSION}" --no-git-tag-version --allow-same-version
+
+          # Обновление констант в исходном коде приложения
+          sed -i "s/export const CURRENT_APP_VERSION = .*/export const CURRENT_APP_VERSION = '${FULL_VERSION}';/" src/services/appUpdateService.ts || true
+          sed -i "s/export const CURRENT_BUILD_NUMBER = .*/export const CURRENT_BUILD_NUMBER = ${BUILD_NUM};/" src/services/appUpdateService.ts || true
+
+          # Обновление versionCode и versionName в Android build.gradle
+          if [ -f android/app/build.gradle ]; then
+            sed -i "s/versionCode [0-9]*/versionCode ${BUILD_NUM}/g" android/app/build.gradle
+            sed -i "s/versionName \".*\"/versionName \"${FULL_VERSION}\"/g" android/app/build.gradle
+            echo "Обновлен android/app/build.gradle: versionCode ${BUILD_NUM}, versionName ${FULL_VERSION}"
+          fi
+
+      - name: Установка зависимостей проекта
+        run: npm install --legacy-peer-deps || npm ci
+
+      - name: Проверка типов и линтинг
+        run: npm run lint
+
+      - name: Запуск модульных тестов
+        run: npm test
+
+      - name: Сборка веб-приложения (Vite Build)
+        run: npm run build
+
+      - name: Упаковка Web/PWA дистрибутива в архив
+        run: |
+          cd dist
+          zip -r ../mastervarka-web-${{ steps.versioning.outputs.TAG_NAME }}.zip .
+          cd ..
+
+      - name: Загрузка артефактов для GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Установка Java JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Синхронизация платформы Android в Capacitor
+        run: npx cap sync android
+
+      - name: Сборка Android APK с постоянным цифровым ключом подписи
+        run: |
+          cd android
+          chmod +x gradlew
+          # Сборка Release APK с фиксированной подписью (mastervarka-release.keystore)
+          ./gradlew assembleRelease --no-daemon || ./gradlew assembleDebug --no-daemon
+          cd ..
+          APK_NAME="mastervarka-${{ steps.versioning.outputs.TAG_NAME }}.apk"
+          if [ -f android/app/build/outputs/apk/release/app-release.apk ]; then
+            cp android/app/build/outputs/apk/release/app-release.apk ./"$APK_NAME"
+            echo "Использован подписанный Release APK: app-release.apk"
+          elif [ -f android/app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp android/app/build/outputs/apk/debug/app-debug.apk ./"$APK_NAME"
+            echo "Использован Debug APK (подписан тем же ключом): app-debug.apk"
+          else
+            echo "Поиск любых сгенерированных .apk файлов..."
+            FOUND_APK=$(find android/app/build/outputs/apk -type f -name "*.apk" | head -n 1)
+            if [ -n "$FOUND_APK" ]; then
+              cp "$FOUND_APK" ./"$APK_NAME"
+              echo "Использован найденный APK: $FOUND_APK"
+            fi
+          fi
+          echo "APK_NAME=${APK_NAME}" >> $GITHUB_OUTPUT
+        id: apk_build
+
+      - name: Сохранение артефактов в GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: mastervarka-artifacts-${{ steps.versioning.outputs.TAG_NAME }}
+          path: |
+            mastervarka-${{ steps.versioning.outputs.TAG_NAME }}.apk
+            mastervarka-web-${{ steps.versioning.outputs.TAG_NAME }}.zip
+          if-no-files-found: warn
+
+      - name: Публикация нового Релиза на GitHub с инкрементом версии
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        with:
+          tag_name: ${{ steps.versioning.outputs.TAG_NAME }}
+          name: "🍺 МастерВарка ${{ steps.versioning.outputs.TAG_NAME }} (Сборка #${{ steps.versioning.outputs.BUILD_NUM }})"
+          body: |
+            ## 🍺 Официальный релиз «МастерВарка» — ${{ steps.versioning.outputs.TAG_NAME }}
+            
+            - **Номер сборки:** #${{ steps.versioning.outputs.BUILD_NUM }}
+            - **Ветка:** `${{ github.ref_name }}`
+            - **Коммит:** `${{ github.sha }}`
+            
+            ---
+            
+            ### 📦 Файлы для скачивания и доступ:
+            1. **📱 Android APK:** `mastervarka-${{ steps.versioning.outputs.TAG_NAME }}.apk` — готовый установочный файл для Android смартфонов и планшетов.
+            2. **🌐 Web / PWA архив:** `mastervarka-web-${{ steps.versioning.outputs.TAG_NAME }}.zip` — автономный веб-бандл с поддержкой офлайн-работы.
+            3. **🍏 Онлайн PWA для iPhone и ПК:** [https://pippopil.github.io/mastervarka/](https://pippopil.github.io/mastervarka/) — открывается в Safari и устанавливается на экран «Домой».
+            
+            ### ✨ Возможности:
+            - **Чистый шаблон:** создание авторских рецептов с нуля без предустановленных ингредиентов.
+            - **Справочник BJCP:** полный перечень стилей пива с делением по брожению (верховое, низовое, спонтанное).
+            - **Поиск в интернет-базе:** фильтрация рецептов по стилю, типу брожения и крепости.
+            - **Курский солод:** подбор и пересчёт отечественных аналогов солодов и хмелей.
+            - **Водный баланс:** расчет заторной, промывочной воды и общего расхода без переполнения полей.
+          files: |
+            mastervarka-${{ steps.versioning.outputs.TAG_NAME }}.apk
+            mastervarka-web-${{ steps.versioning.outputs.TAG_NAME }}.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-pages:
+    name: Публикация PWA на GitHub Pages
+    needs: build-and-release
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Деплой на GitHub Pages
+        id: deployment
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+
+      - name: Информирование при статусе GitHub Pages (404)
+        if: steps.deployment.outcome == 'failure'
+        run: |
+          echo "::warning title=GitHub Pages не активирован в настройках::Для публикации веб-версии перейдите в Settings -> Pages (https://github.com/pippopil/mastervarka/settings/pages) и переключите Source на 'GitHub Actions'."
+          echo "### ⚠️ Деплой на GitHub Pages пропущен (404)" >> $GITHUB_STEP_SUMMARY
+          echo "Для автоматической публикации веб-версии необходимо однократно включить Pages в репозитории:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Откройте **Settings -> Pages** в настройках репозитория: [https://github.com/pippopil/mastervarka/settings/pages](https://github.com/pippopil/mastervarka/settings/pages)" >> $GITHUB_STEP_SUMMARY
+          echo "2. В секции **Build and deployment** выберите **Source**: **GitHub Actions**." >> $GITHUB_STEP_SUMMARY
+          echo "3. После этого живая веб-версия PWA будет разворачиваться при каждом коммите." >> $GITHUB_STEP_SUMMARY
