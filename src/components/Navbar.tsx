@@ -50,6 +50,7 @@ interface Props {
   onOpenBeerXmlModal: () => void;
   isOffline: boolean;
   activeBatchesCount: number;
+  recipesCount?: number;
   globalBatchSizeL: number;
   onSetGlobalBatchSizeL: (sizeL: number) => void;
   onOpenHistory?: () => void;
@@ -70,6 +71,7 @@ export const Navbar: React.FC<Props> = ({
   onOpenBeerXmlModal,
   isOffline,
   activeBatchesCount,
+  recipesCount,
   globalBatchSizeL,
   onSetGlobalBatchSizeL,
   onOpenHistory,
@@ -84,7 +86,7 @@ export const Navbar: React.FC<Props> = ({
 
   const navItems = [
     { id: 'calculator', label: 'Калькулятор', icon: Calculator },
-    { id: 'catalogue', label: 'Рецепты (34)', icon: BookOpen },
+    { id: 'catalogue', label: recipesCount !== undefined ? `Рецепты (${recipesCount})` : 'Рецепты', icon: BookOpen },
     { id: 'uniholic', label: 'Пивоварня ⚡', icon: Cpu },
     { id: 'matcher', label: 'Склад', icon: Search },
     {

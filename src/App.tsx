@@ -1078,6 +1078,7 @@ export default function App() {
         onOpenBeerXmlModal={() => setCloudModalOpen(true)}
         isOffline={isOffline}
         activeBatchesCount={activeBatchesCount}
+        recipesCount={recipes.length}
         globalBatchSizeL={globalBatchSizeL}
         onSetGlobalBatchSizeL={handleSetGlobalBatchSizeL}
         onOpenHistory={() => handleOpenHistory()}
